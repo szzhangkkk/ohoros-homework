@@ -123,9 +123,16 @@ static void ServoSetTarget(unsigned int angle)
 /*
  * ServoMoveStep — 每主循环调用一次，逐步逼近目标角度。
  *
- * 【修复点 1】每步发送多个连续 PWM 脉冲而非仅 1 个，
- *            舵机获得稳定的 50Hz 连续参考信号，不再抽搐。
- * 【修复点 2】到位后周期性发送保持脉冲，舵机不丢力矩。
+ * 【关键设计】参考 pwm_servo.c 的成功做法：
+ *   每个角度持续发送多个连续 PWM 脉冲，两个角度之间零间隔。
+ *   pwm_servo 用 for 循环实现：ServoSetAngle(angle) 内部发 15 个脉冲(300ms)，
+ *   循环结束后立刻进入下一个角度，无 osDelay。
+ *
+ *   因此：舵机移动时，主循环不加 osDelay，脉冲本身提供时序；
+ *   静止时加 osDelay 释放 CPU。
+ *
+ *   每步移动 SERVO_STEP_DEG°（默认 6°），每步发 SERVO_MOVE_BURST_CYCLES
+ *   个脉冲（默认 10 ≈ 200ms）。开门 90°/6°=15 步 × 208ms ≈ 3 秒。
  */
 static void ServoMoveStep(void)
 {
@@ -144,17 +151,19 @@ static void ServoMoveStep(void)
 
     g_servo_hold_ctr = 0;
 
-    /* ---- 移动 3° ---- */
+    /* ---- 移动 SERVO_STEP_DEG° ---- */
     if (g_servo_angle < g_servo_target) {
-        g_servo_angle += 3;
+        g_servo_angle += SERVO_STEP_DEG;
         if (g_servo_angle > g_servo_target) g_servo_angle = g_servo_target;
     } else {
-        if (g_servo_angle < 3) g_servo_angle = 0;
-        else g_servo_angle -= 3;
+        if (g_servo_angle < SERVO_STEP_DEG)
+            g_servo_angle = 0;
+        else
+            g_servo_angle -= SERVO_STEP_DEG;
         if (g_servo_angle < g_servo_target) g_servo_angle = g_servo_target;
     }
 
-    /* 连续发 N 个 PWM = 舵机看到稳定参考信号 */
+    /* 连续发脉冲 → 舵机获得连续 50Hz 参考，无间隙 */
     uint32_t us = ServoAngleToPulseUs(g_servo_angle);
     for (unsigned int i = 0; i < SERVO_MOVE_BURST_CYCLES; i++) {
         ServoSendPulseUs(us);
@@ -444,14 +453,27 @@ static void DoorAccessTask(void *arg)
     uint32_t elapsed = MAIN_LOOP_INTERVAL_MS;
 
     for (;;) {
+        uint8_t moving = (g_servo_angle != g_servo_target) ? 1 : 0;
+
         DoorPirSample(elapsed);
         uint8_t btn = (DoorButtonRead() == 0) ? 1 : 0;
         DoorControl(elapsed, btn);
         ServoMoveStep();
         DoorLedUpdate(elapsed);
         IoTWatchDogKick();
-        osDelay(MS_TO_TICKS(MAIN_LOOP_INTERVAL_MS));
-        elapsed = MAIN_LOOP_INTERVAL_MS;
+
+        /*
+         * 参考 pwm_servo.c: 运动中不打 osDelay，只靠脉冲忙等提供时序。
+         * 这样舵机看到的是零间隙的连续 50Hz 信号 → 不会抽搐。
+         * 静止时才打 50ms osDelay 释放 CPU 给其他任务。
+         */
+        if (!moving) {
+            osDelay(MS_TO_TICKS(MAIN_LOOP_INTERVAL_MS));
+        }
+        /* 运动中: 循环耗时 ≈ SERVO_MOVE_BURST_CYCLES × 20ms ≈ 200ms */
+        elapsed = moving
+            ? (SERVO_MOVE_BURST_CYCLES * (SERVO_PWM_PERIOD_US / 1000))
+            : MAIN_LOOP_INTERVAL_MS;
     }
 }
 

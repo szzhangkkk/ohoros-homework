@@ -57,8 +57,10 @@ extern "C" {
 
 /* 每个角度保持的 PWM 周期数（15 周期 ≈ 300ms） */
 #define SERVO_HOLD_CYCLES            15
-/* 门禁移动时每步脉冲数（5 周期 ≈ 100ms），兼顾平滑度与主循环响应速度 */
-#define SERVO_MOVE_BURST_CYCLES      5
+/* 舵机移动时每步脉冲数（10 周期 ≈ 200ms），参考 pwm_servo.c 的 15 周期 */
+#define SERVO_MOVE_BURST_CYCLES      10
+/* 舵机移动步进角度（每步 6°），减少步数加快响应 */
+#define SERVO_STEP_DEG               6
 /* 到位后持续发送保持 PWM 的周期间隔（每 N 个主循环发一次保持脉冲） */
 #define SERVO_HOLD_REFRESH_LOOPS     4       /* 每 4 次主循环（200ms）发一组保持 PWM */
 
