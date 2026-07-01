@@ -86,8 +86,8 @@ extern "C" {
 /* PIR 采样间隔（毫秒） */
 #define PIR_SAMPLE_INTERVAL_MS       100
 
-/* 按键消抖：需要连续相同读数的次数 */
-#define BUTTON_DEBOUNCE_SAMPLES      3
+/* 按键消抖：连续相同读数的次数（主循环 250ms/轮，2次≈500ms 消抖） */
+#define BUTTON_DEBOUNCE_SAMPLES      2
 
 /* 自动落锁超时（毫秒） */
 #define AUTO_LOCK_TIMEOUT_MS         10000
