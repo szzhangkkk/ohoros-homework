@@ -56,11 +56,22 @@ extern "C" {
 
 /* 每个角度保持的 PWM 周期数（15 周期 ≈ 300ms） */
 #define SERVO_HOLD_CYCLES            15
+/* 门禁移动时每步脉冲数（5 周期 ≈ 100ms），兼顾平滑度与主循环响应速度 */
+#define SERVO_MOVE_BURST_CYCLES      5
+/* 到位后持续发送保持 PWM 的周期间隔（每 N 个主循环发一次保持脉冲） */
+#define SERVO_HOLD_REFRESH_LOOPS     4       /* 每 4 次主循环（200ms）发一组保持 PWM */
 
 /* ======================== 门锁角度 ======================== */
 
 #define DOOR_LOCK_ANGLE_DEG          0       /* 闭锁：舵机 0° */
 #define DOOR_UNLOCK_ANGLE_DEG        90      /* 开锁：舵机 90°（可按锁具结构调整） */
+
+/* ======================== PIR 防抖/防抖回环 ======================== */
+
+/* PIR 需连续 N 次采样为「无人」才算真正无人，防止短暂掉信号误判 */
+#define PIR_IDLE_CONFIRM_SAMPLES     5       /* 连续 5 次 ≈ 500ms 确认 */
+/* PIR 从「有人→无人」后，强制闭锁前的最短冷却期（防止门动作触发 PIR 回环） */
+#define PIR_COOLDOWN_AFTER_MOTION_MS 3000    /* 3 秒冷却期 */
 
 /* ======================== 时间参数 ======================== */
 
@@ -112,6 +123,7 @@ typedef enum {
     DOOR_STATE_LOCKED = 0,
     DOOR_STATE_UNLOCKING,
     DOOR_STATE_UNLOCKED,
+    DOOR_STATE_LOCKING,
 } door_state_t;
 
 /* ======================== SLE 无线通信参数 ======================== */
