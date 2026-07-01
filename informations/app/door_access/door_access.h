@@ -106,12 +106,19 @@ extern "C" {
 /* ======================== PIR 阈值 ======================== */
 
 /*
- * WS63 adc_port_read() 返回驱动换算后的 mV。
- * SR602 人体红外传感器：人体活动越强，ADC 读数越高。
- * 三档：motion / neutral / idle。
+ * WS63 adc_port_read() 返回驱动换算后的 mV，满量程 3600mV。
+ * SR602 人体红外传感器：人体越近、活动越强，ADC 读数越高。
+ *
+ * 阈值设计思路（门禁近距离场景）：
+ *   - 有人阈值设得较高（2800mV），只有贴到门前方圆 ~0.5m 内才触发。
+ *     远距离路过的人不会误触发。
+ *   - 无人阈值设得较低（750mV），确保人走远后能快速归零。
+ *   - 中间值（750~2800mV）保持上一次判定，滞回防抖。
+ *
+ * 如需调整灵敏度：拉高 MOTION_GE 值 = 要更近才能触发。
  */
 #define ADC_MV_FULL_SCALE            3600U
-#define ADC_HUMAN_MOTION_GE_MV       1850U   /* >= 此值判定为有人 */
+#define ADC_HUMAN_MOTION_GE_MV       2800U   /* >= 此值判定为有人（强阈值，仅近距离） */
 #define ADC_HUMAN_IDLE_LE_MV         750U    /* <= 此值判定为空闲 */
 
 #if ADC_HUMAN_IDLE_LE_MV >= ADC_HUMAN_MOTION_GE_MV
