@@ -209,11 +209,13 @@ static void DoorPirSample(uint32_t elapsed_ms)
     if (adc_port_read(DOOR_PIR_ADC_CHANNEL, &mv) != ERRCODE_SUCC) return;
 
     if (mv >= ADC_HUMAN_MOTION_GE_MV) {
+        if (!g_pir_motion) DOOR_PRINTF("PIR: %umV >= %u → MOTION", mv, ADC_HUMAN_MOTION_GE_MV);
         g_pir_idle_cnt = 0;
         g_pir_motion = 1;
     } else if (mv <= ADC_HUMAN_IDLE_LE_MV) {
         g_pir_idle_cnt++;
         if (g_pir_idle_cnt >= PIR_IDLE_CONFIRM_SAMPLES) {
+            if (g_pir_motion) DOOR_PRINTF("PIR: %umV <= %u → IDLE", mv, ADC_HUMAN_IDLE_LE_MV);
             g_pir_motion = 0;
             g_pir_idle_cnt = PIR_IDLE_CONFIRM_SAMPLES;
         }
@@ -244,6 +246,8 @@ static void DoorControl(uint32_t elapsed_ms, uint8_t btn)
             DOOR_PRINTF("PIR+BTN → opening");
             ServoSetTarget(DOOR_UNLOCK_ANGLE_DEG);
             g_door_state = DOOR_STATE_UNLOCKING;
+        } else if (g_pir_motion || btn) {
+            DOOR_PRINTF("wait: PIR=%d BTN=%d (need both)", g_pir_motion, btn);
         }
         break;
 
