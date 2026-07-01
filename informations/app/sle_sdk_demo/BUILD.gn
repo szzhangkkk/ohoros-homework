@@ -1,0 +1,65 @@
+# Copyright (c) 2026 SZTU Open Source Organization.
+# 适用平台：九联星闪开发板，海思 WS63E 芯片。
+#
+#   sle_sdk_role  "server" | "client" — 双板分别编译烧录
+#
+# 分层（与 ble_sdk_demo / wifi_sdk_demo 一致）：
+#   sle_server_sdk.c / sle_server_adv.c / sle_client_sdk.c — 协议栈封装，两种角色均编入
+#   sle_server_demo.c / sle_client_demo.c — 按角色只编入其一（含 APP_FEATURE_INIT）
+
+declare_args() {
+  sle_sdk_role = "client"
+  # true：Client 板 GPIO10 控灯；false：仅串口打印 SLE 交互日志
+  sle_sdk_led_enable = true
+}
+
+static_library("sle_sdk_demo") {
+  sources = [
+    #"hal_iot_gpio_ex.c",
+    "sle_server_sdk.c",
+    "sle_server_adv.c",
+    "sle_client_sdk.c",
+  ]
+
+  if (sle_sdk_role == "server") {
+    sources += [ "sle_server_demo.c" ]
+  } else if (sle_sdk_role == "client") {
+    sources += [ "sle_client_demo.c" ]
+  } else {
+    assert(false, "sle_sdk_role must be \"server\" or \"client\"")
+  }
+
+  defines = [
+    "CONFIG_UART_SUPPORT_TX",
+    "CONFIG_UART_SUPPORT_RX",
+  ]
+
+  if (sle_sdk_led_enable) {
+    defines += [ "SLE_SDK_LED_ENABLE=1" ]
+  } else {
+    defines += [ "SLE_SDK_LED_ENABLE=0" ]
+  }
+
+  include_dirs = [
+    "//commonlibrary/utils_lite/include",
+    "//kernel/liteos_m/kal/cmsis",
+    "//base/iothardware/peripheral/interfaces/inner_api",
+    "//utils/native/lite/include",
+    "//kernel/liteos_m/components/cmsis/2.0",
+    "//device/soc/hisilicon/ws63v100/sdk/kernel/liteos/liteos_v208.5.0/Huawei_LiteOS/compat/linux/include",
+    "//base/startup/init/interfaces/innerkits/include",
+    "//device/soc/hisilicon/ws63v100/sdk/include/driver",
+    "//device/soc/hisilicon/ws63v100/sdk/drivers/chips/ws63/rom/drivers/chips/ws63/porting/pinctrl",
+    "//device/soc/hisilicon/ws63v100/sdk/include/middleware/services/bts/sle",
+    "//foundation/communication/sle",
+    "//device/soc/hisilicon/ws63v100/sdk/kernel/osal/include",
+    "//device/soc/hisilicon/ws63v100/sdk/kernel/osal/include/debug",
+    "//device/soc/hisilicon/ws63v100/sdk/kernel/osal/include/memory",
+    "//device/soc/hisilicon/ws63v100/sdk/kernel/osal/include/schedule",
+    "//device/soc/hisilicon/ws63v100/sdk/drivers/chips/ws63/porting/uart",
+    "//device/soc/hisilicon/ws63v100/sdk/drivers/drivers/hal/uart",
+    "//device/soc/hisilicon/ws63v100/adapter/hals/communication/sle_lite/include",
+    "//device/soc/hisilicon/ws63v100/sdk/middleware/utils/common_headers/native",
+    ".",
+  ]
+}

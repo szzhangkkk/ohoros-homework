@@ -1,0 +1,9 @@
+static_library("helloworld_demo") {
+    sources = [
+        "helloworld.c"
+    ]
+
+    include_dirs = [
+        "//utils/native/lite/include",
+    ]
+}

@@ -1,0 +1,45 @@
+# SLE 星闪无线简易门禁系统
+# 路径与 sle_sdk_demo/BUILD.gn 对齐（已验证可编译）
+
+static_library("door_access") {
+  sources = [
+    "sle_uart_server.c",
+    "sle_uart_server_adv.c",
+    "door_access.c",
+  ]
+
+  defines = [
+    "CONFIG_UART_SUPPORT_TX",
+    "CONFIG_UART_SUPPORT_RX",
+  ]
+
+  include_dirs = [
+    # === 以下来自 sle_sdk_demo/BUILD.gn（已验证） ===
+    "//commonlibrary/utils_lite/include",
+    "//kernel/liteos_m/kal/cmsis",
+    "//base/iothardware/peripheral/interfaces/inner_api",
+    "//utils/native/lite/include",
+    "//kernel/liteos_m/components/cmsis/2.0",
+    "//device/soc/hisilicon/ws63v100/sdk/kernel/liteos/liteos_v208.5.0/Huawei_LiteOS/compat/linux/include",
+    "//base/startup/init/interfaces/innerkits/include",
+    "//device/soc/hisilicon/ws63v100/sdk/include/driver",
+    "//device/soc/hisilicon/ws63v100/sdk/drivers/chips/ws63/rom/drivers/chips/ws63/porting/pinctrl",
+    "//device/soc/hisilicon/ws63v100/sdk/include/middleware/services/bts/sle",
+    "//foundation/communication/sle",
+    "//device/soc/hisilicon/ws63v100/adapter/hals/communication/sle_lite/include",
+    "//device/soc/hisilicon/ws63v100/sdk/kernel/osal/include",
+    "//device/soc/hisilicon/ws63v100/sdk/kernel/osal/include/debug",
+    "//device/soc/hisilicon/ws63v100/sdk/kernel/osal/include/memory",
+    "//device/soc/hisilicon/ws63v100/sdk/kernel/osal/include/schedule",
+    "//device/soc/hisilicon/ws63v100/sdk/drivers/chips/ws63/porting/uart",
+    "//device/soc/hisilicon/ws63v100/sdk/drivers/drivers/hal/uart",
+    "//device/soc/hisilicon/ws63v100/sdk/middleware/utils/common_headers/native",
+    # === 以下为 door_access 额外需要 ===
+    "//device/soc/hisilicon/ws63v100/sdk/include",
+    "//device/soc/hisilicon/ws63v100/sdk/kernel/liteos/include",
+    "//device/soc/hisilicon/ws63v100/sdk/drivers/chips/ws63/porting/adc",
+    "//device/soc/hisilicon/ws63v100/sdk/kernel/osal/include/interrupt",
+    # 当前目录
+    ".",
+  ]
+}

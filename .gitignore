@@ -1,0 +1,19 @@
+# Duplicate archive - content already in informations/ directory
+informations.zip
+
+# Claude AI internal files
+.claude/
+
+# Windows Zone.Identifier files
+*:Zone.Identifier
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/

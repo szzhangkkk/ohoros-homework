@@ -1,0 +1,6 @@
+1.替換device/soc/hisilicon/ws63v100/sdk/drivers/chips/ws63/porting/adc文件夹为替换1下的adc文件夹。
+2.替换device/soc/hisilicon/ws63v100/sdk/drivers/drivers/driver/adc文件夹为替换2下的adc文件夹。
+3.替换device/soc/hisilicon/ws63v100/sdk/drivers/drivers/hal/adc文件夹为替换3下的adc文件夹。
+4.替换device/soc/hisilicon/ws63v100/sdk/include/driver/adc.h头文件为替换4下的adc.h
+
+5.（可选）在同目录执行脚本一键完成 1～4：bash apply_adc_driver_patch.sh（预览：加 --dry-run；跳过确认：加 --yes）

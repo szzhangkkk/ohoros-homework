@@ -1,0 +1,38 @@
+static_library("uart_tcp") {
+  sources = [
+    "uart_tcp.c",
+    "src/wifi_connecter.c",
+    "src/wifi_starter.c",
+  ]
+  defines = [
+    "CONFIG_UART_SUPPORT_TX",
+    "CONFIG_UART_SUPPORT_RX",
+    "LWIP_CONFIG_FILE=\"lwip/lwipopts_default.h\"",
+    "CONFIG_SERVER_PORT = 8080"
+  ]
+  include_dirs = [
+    ".",
+    "src",
+    "//commonlibrary/utils_lite/include",
+    "//kernel/liteos_m/kal/cmsis",
+    "//base/iothardware/peripheral/interfaces/inner_api",
+    "//device/soc/hisilicon/ws63v100/sdk/open_source/lwip/lwip_v2.1.3/src/include",
+    "//device/soc/hisilicon/ws63v100/sdk/open_source/lwip/lwip_adapter/liteos_207/src/include",
+    "//device/soc/hisilicon/ws63v100/sdk/kernel/liteos/liteos_v208.5.0/Huawei_LiteOS/compat/linux/include",
+    "//device/soc/hisilicon/ws63v100/sdk/kernel/osal/include/lock",
+    "//device/soc/hisilicon/ws63v100/sdk/kernel/osal/include/schedule",
+    "//device/soc/hisilicon/ws63v100/sdk/middleware/utils/common_headers/native",
+    "//device/soc/hisilicon/ws63v100/sdk/kernel/osal/include",
+    "//device/soc/hisilicon/ws63v100/sdk/kernel/osal/include/debug",
+    "//device/soc/hisilicon/ws63v100/sdk/kernel/osal/include/memory",
+    "//device/soc/hisilicon/ws63v100/sdk/include/middleware/services/wifi",
+    "//base/startup/init/interfaces/innerkits/include",
+    "//device/soc/hisilicon/ws63v100/sdk/include/driver",
+    "//device/soc/hisilicon/ws63v100/sdk/drivers/chips/ws63/rom/drivers/chips/ws63/porting/pinctrl",
+    "//device/soc/hisilicon/ws63v100/sdk/include/middleware/services/bts/sle",
+    "//foundation/communication/wifi_lite/interfaces/wifiservice/",
+    "//device/soc/hisilicon/ws63v100/sdk/drivers/drivers/hal/uart",
+    "//device/soc/hisilicon/ws63v100/sdk/drivers/chips/ws63/porting/uart",
+    "//device/soc/hisilicon/ws63v100/adapter/hals/communication/wifi_lite/wifiservice/include",
+  ]
+}
