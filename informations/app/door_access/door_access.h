@@ -33,61 +33,52 @@ extern "C" {
 
 /* ======================== 引脚定义 ======================== */
 
-/* 舵机信号线（黄线）接排针 GPIO10 */
 #define DOOR_SERVO_GPIO              10
-
-/* SR602 微型人体红外传感器：GPIO12 → ADC5 */
 #define DOOR_PIR_ADC_CHANNEL         5U
-
-/* 开门按键 — GPIO8，低电平有效 */
 #define DOOR_BUTTON_GPIO             8
-
-/* 状态 LED — GPIO11，低电平点亮 */
 #define DOOR_LED_GPIO                11
 
 /* ======================== 舵机 PWM 时序（50Hz） ======================== */
 
-/* 50Hz 周期 = 20ms = 20000us */
-#define SERVO_PWM_PERIOD_US          20000
-
-/* 舵机标准脉宽端点（微秒） */
-#define SERVO_PULSE_MIN_US           500     /* 0°   对应 0.5ms 高电平 */
-#define SERVO_PULSE_MAX_US           2500    /* 180° 对应 2.5ms */
+#define SERVO_PWM_PERIOD_US          20000       /* 50Hz = 20ms */
+#define SERVO_PULSE_MIN_US           500         /* 0° 脉宽 */
+#define SERVO_PULSE_MAX_US           2500        /* 180° 脉宽 */
 #define SERVO_PULSE_RANGE_US         (SERVO_PULSE_MAX_US - SERVO_PULSE_MIN_US)
 
-/* 到位后每轮保持脉冲数（10 周期 ≈ 200ms），每轮都发，舵机始终有力矩 */
-#define SERVO_HOLD_CYCLES            10
-/* 舵机移动时每步脉冲数（8 周期 ≈ 160ms），比之前更快 */
-#define SERVO_MOVE_BURST_CYCLES      8
-/* 舵机移动步进角度（每步 10°），9 步 ≈ 1.5s 开/关门 */
-#define SERVO_STEP_DEG               10
+/*
+ * 舵机转动到目标角度时发送的脉冲数。
+ * 50 个周期 × 20ms = 1000ms = 1 秒。
+ * SG90 从 0° 转到 90° 约需 0.1~0.2s（空载），
+ * 此处 1s 确保带负载也能转到位。
+ */
+#define SERVO_TRAVEL_CYCLES          50
 
 /* ======================== 门锁角度 ======================== */
 
-#define DOOR_LOCK_ANGLE_DEG          0       /* 闭锁：舵机 0° */
-#define DOOR_UNLOCK_ANGLE_DEG        90      /* 开锁：舵机 90° */
+#define DOOR_LOCK_ANGLE_DEG          0
+#define DOOR_UNLOCK_ANGLE_DEG        90
 
-/* ======================== PIR 防抖 ======================== */
+/* ======================== PIR ======================== */
 
-/* PIR 需连续 N 次采样为「无人」才算真正无人 */
 #define PIR_IDLE_CONFIRM_SAMPLES     5
+#define ADC_MV_FULL_SCALE            3600U
+#define ADC_HUMAN_MOTION_GE_MV       2200U   /* >= 此值判定为有人 */
+#define ADC_HUMAN_IDLE_LE_MV         750U    /* <= 此值判定为空闲 */
+
+#if ADC_HUMAN_IDLE_LE_MV >= ADC_HUMAN_MOTION_GE_MV
+#error "ADC_HUMAN_IDLE_LE_MV must be less than ADC_HUMAN_MOTION_GE_MV"
+#endif
 
 /* ======================== 时间参数 ======================== */
 
-/* LiteOS 系统 tick 频率 100Hz，1 tick = 10ms */
 #define TICK_PER_SEC                 100
 #define MS_TO_TICKS(ms)              (((ms) * TICK_PER_SEC) / 1000)
 
-/* 主循环间隔（毫秒） */
 #define MAIN_LOOP_INTERVAL_MS        50
-
-/* PIR 采样间隔（毫秒） */
 #define PIR_SAMPLE_INTERVAL_MS       100
-
-/* 按键消抖：连续相同读数的次数 */
 #define BUTTON_DEBOUNCE_SAMPLES      2
 
-/* 开门后等待时间（毫秒）：开到位后等 2s 再自动关门 */
+/* 开门后保持时间：开到位后等 2s 再关门 */
 #define UNLOCK_HOLD_MS               2000
 
 /* LED 闪烁间隔（毫秒） */
@@ -98,32 +89,9 @@ extern "C" {
 #define DOOR_TASK_STACK_SIZE         0x1000
 #define DOOR_TASK_PRIO               25
 
-/* 启动延时（等待 SLE 协议栈就绪） */
 #define DOOR_START_DELAY_MS          1000
 
-/* ======================== PIR 阈值 ======================== */
-
-/*
- * WS63 adc_port_read() 返回驱动换算后的 mV，满量程 3600mV。
- * SR602 人体红外传感器：人体越近、活动越强，ADC 读数越高。
- *
- * 阈值设计思路（门禁近距离场景）：
- *   - 有人阈值设得较高（2200mV），需要在门前 ~1m 内才触发。
- *     远距离路过的人不会误触发。
- *   - 无人阈值设得较低（750mV），确保人走远后能快速归零。
- *   - 中间值（750~2200mV）保持上一次判定，滞回防抖。
- *
- * 如需调整灵敏度：拉高 MOTION_GE 值 = 要更近才能触发。
- */
-#define ADC_MV_FULL_SCALE            3600U
-#define ADC_HUMAN_MOTION_GE_MV       2200U   /* >= 此值判定为有人（需靠近 ~1m 内） */
-#define ADC_HUMAN_IDLE_LE_MV         750U    /* <= 此值判定为空闲 */
-
-#if ADC_HUMAN_IDLE_LE_MV >= ADC_HUMAN_MOTION_GE_MV
-#error "ADC_HUMAN_IDLE_LE_MV must be less than ADC_HUMAN_MOTION_GE_MV"
-#endif
-
-/* ======================== 门禁状态枚举 ======================== */
+/* ======================== 门禁状态 ======================== */
 
 typedef enum {
     DOOR_STATE_LOCKED = 0,
@@ -134,52 +102,30 @@ typedef enum {
 
 /* ======================== SLE 无线通信参数 ======================== */
 
-/* 星闪广播名称（手机扫描此名连接门禁） */
 #define DOOR_SLE_SERVER_NAME         "OHOS_SLE_DOOR"
-
-/* 本地 MAC 地址（6 字节） */
 #define DOOR_SLE_LOCAL_ADDR          { 0x78, 0x70, 0x60, 0x88, 0x96, 0x46 }
-
-/* SSAP 服务 UUID 和属性 UUID */
 #define DOOR_SLE_SERVICE_UUID        0x2222
 #define DOOR_SLE_PROPERTY_UUID       0x2323
-
-/* 属性权限：可读可写 */
 #define DOOR_SLE_PROPERTIES          (SSAP_PERMISSION_READ | SSAP_PERMISSION_WRITE)
 #define DOOR_SLE_OPERATION_INDICATION (SSAP_OPERATE_INDICATION_BIT_READ | SSAP_OPERATE_INDICATION_BIT_WRITE)
-
-/* 广播名称最大长度 */
 #define DOOR_SLE_NAME_MAX_LEN        16
-
-/* 广播句柄 */
 #define DOOR_SLE_ADV_HANDLE          1
-
-/* 广播/连接时间参数（单位 125us） */
-#define DOOR_SLE_ADV_INTERVAL_MIN    0xC8    /* 25ms */
-#define DOOR_SLE_ADV_INTERVAL_MAX    0xC8    /* 25ms */
-#define DOOR_SLE_CONN_INTV_MIN       0x64    /* 12.5ms */
-#define DOOR_SLE_CONN_INTV_MAX       0x64    /* 12.5ms */
-#define DOOR_SLE_CONN_SUPERVISION_TO 0x1F4   /* 5000ms，单位 10ms */
-#define DOOR_SLE_CONN_MAX_LATENCY    0x1F3   /* 4990ms，单位 10ms */
-
-/* 广播发送功率 */
+#define DOOR_SLE_ADV_INTERVAL_MIN    0xC8
+#define DOOR_SLE_ADV_INTERVAL_MAX    0xC8
+#define DOOR_SLE_CONN_INTV_MIN       0x64
+#define DOOR_SLE_CONN_INTV_MAX       0x64
+#define DOOR_SLE_CONN_SUPERVISION_TO 0x1F4
+#define DOOR_SLE_CONN_MAX_LATENCY    0x1F3
 #define DOOR_SLE_ADV_TX_POWER        10
-
-/* 最大广播数据长度 */
 #define DOOR_SLE_ADV_DATA_LEN_MAX    251
 
-/* 手机 ↔ 门禁板 命令定义 */
-#define DOOR_CMD_LOCK                0x00    /* 闭锁 */
-#define DOOR_CMD_UNLOCK              0x01    /* 开锁 */
+#define DOOR_CMD_LOCK                0x00
+#define DOOR_CMD_UNLOCK              0x01
+#define DOOR_REMOTE_CMD_NONE         0xFF
 
-/* 远程命令（SLE 回调写入，主循环消费） */
-#define DOOR_REMOTE_CMD_NONE         0xFF    /* 无待处理命令 */
-
-/* ======================== 日志标签 ======================== */
+/* ======================== 日志 ======================== */
 
 #define DOOR_LOG                     "[DoorAccess]"
-
-/* ======================== 地址打印宏 ======================== */
 
 #define DOOR_ADDR_PRINT_FMT          "%02X:%02X:%02X:%02X:%02X:%02X"
 #define DOOR_ADDR_PRINT_ARG(a)       (unsigned)(a)[0], (unsigned)(a)[1], (unsigned)(a)[2], \

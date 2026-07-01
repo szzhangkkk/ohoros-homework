@@ -4,23 +4,8 @@
  *
  * door_access.c — SLE 星闪无线简易门禁系统 主应用
  *
- * ======================== 功能概述 ========================
- *
- * 功能1：本地按键开门
- *   SR602 人体红外传感器（GPIO12 → ADC5）+ GPIO8 按键按下
- *   → 舵机正向转90°开门 → 等2s → 反向转90°关门 → PIR重开待下次触发
- *   PIR+按键同时满足才触发（AND 逻辑），防止误触发。
- *
- * 功能2：SLE 星闪无线管控
- *   手机通过 SLE 远程发送 0x00=闭锁 / 0x01=开锁
- *
- * ======================== LED 指示 ========================
- *
- *   闭锁 + SLE已连接   → 灭
- *   闭锁 + SLE未连接   → 慢闪（500ms）
- *   运动中              → 快闪（200ms）
- *   开锁 + SLE已连接   → 常亮
- *   开锁 + SLE未连接   → 慢闪
+ * 舵机控制参考 servo.c: ServoSetAngle() 直接发 N 个脉冲到目标角度，
+ * 不逐步走角度，舵机内部自行平滑转动。完整流程为阻塞式 open-wait-close。
  */
 
 #include "door_access.h"
@@ -40,35 +25,35 @@
 #include "sle_uart_server.h"
 #include "sle_errcode.h"
 
-/* ======================== 全局状态 ======================== */
-
-static unsigned int g_servo_angle  = 0;
-static unsigned int g_servo_target = 0;
-
-static door_state_t g_door_state = DOOR_STATE_LOCKED;
-static uint32_t     g_hold_timer = 0;   /* 开门后等待计时（ms） */
+/* ======================== 全局 ======================== */
 
 static volatile uint8_t g_remote_cmd = DOOR_REMOTE_CMD_NONE;
 
-/* 按键消抖 */
 static uint8_t g_btn_stable       = 1;
 static uint8_t g_btn_last_raw     = 1;
 static uint8_t g_btn_debounce_cnt = 0;
 
-/* PIR */
 static uint32_t g_pir_last_ms  = 0;
 static uint8_t  g_pir_motion   = 0;
 static uint8_t  g_pir_idle_cnt = 0;
 
-/* LED */
 static uint32_t g_led_toggle_ms = 0;
 static uint8_t  g_led_on        = 0;
 
 #define DOOR_PRINTF(fmt, args...) printf(DOOR_LOG " " fmt "\r\n", ##args)
 
-/* ======================== 舵机控制 ======================== */
+/* ======================== 舵机 ======================== */
 
-static void ServoSendPulseUs(uint32_t pulse_us)
+static uint32_t ServoAngleToPulseUs(unsigned int angle)
+{
+    if (angle > 180) angle = 180;
+    return SERVO_PULSE_MIN_US + (angle * SERVO_PULSE_RANGE_US) / 180;
+}
+
+/*
+ * 输出一个 50Hz PWM 周期（20ms）
+ */
+static void ServoSendOnePeriod(uint32_t pulse_us)
 {
     if (pulse_us > SERVO_PWM_PERIOD_US) pulse_us = SERVO_PWM_PERIOD_US;
     IoTGpioSetOutputVal(DOOR_SERVO_GPIO, IOT_GPIO_VALUE1);
@@ -77,51 +62,42 @@ static void ServoSendPulseUs(uint32_t pulse_us)
     (void)uapi_tcxo_delay_us(SERVO_PWM_PERIOD_US - pulse_us);
 }
 
-static uint32_t ServoAngleToPulseUs(unsigned int angle)
+/*
+ * 参考 servo.c: ServoSetAngle
+ * 直接发 TRAVEL_CYCLES 个脉冲到目标角度，阻塞式。
+ * 舵机收到连续 50Hz 信号 → 平滑转动到目标 → 不抽搐。
+ */
+static void ServoSetAngle(unsigned int angle)
 {
     if (angle > 180) angle = 180;
-    return SERVO_PULSE_MIN_US + (angle * SERVO_PULSE_RANGE_US) / 180;
-}
+    uint32_t us = ServoAngleToPulseUs(angle);
 
-static void ServoSetTarget(unsigned int angle)
-{
-    if (angle > 180) angle = 180;
-    g_servo_target = angle;
+    for (unsigned int i = 0; i < SERVO_TRAVEL_CYCLES; i++) {
+        ServoSendOnePeriod(us);
+    }
+
+    DOOR_PRINTF("servo -> %u deg, pulse=%u us", angle, us);
 }
 
 /*
- * ServoMoveStep — 每主循环调用一次。
- *   移动中：每步发 SERVO_MOVE_BURST_CYCLES 个脉冲，不打 osDelay（零间隙）
- *   静止时：每轮发 SERVO_HOLD_CYCLES 个保持脉冲
+ * 参考 servo.c: ServoDispenseOnce
+ * 开锁 → 保持 2s → 闭锁，阻塞式完成一次开关门。
  */
-static void ServoMoveStep(void)
+static void DoorDoOpenClose(void)
 {
-    if (g_servo_angle == g_servo_target) {
-        uint32_t us = ServoAngleToPulseUs(g_servo_angle);
-        for (unsigned int i = 0; i < SERVO_HOLD_CYCLES; i++) {
-            ServoSendPulseUs(us);
-        }
-        return;
-    }
+    DOOR_PRINTF("opening");
+    ServoSetAngle(DOOR_UNLOCK_ANGLE_DEG);
 
-    if (g_servo_angle < g_servo_target) {
-        g_servo_angle += SERVO_STEP_DEG;
-        if (g_servo_angle > g_servo_target) g_servo_angle = g_servo_target;
-    } else {
-        if (g_servo_angle < SERVO_STEP_DEG)
-            g_servo_angle = 0;
-        else
-            g_servo_angle -= SERVO_STEP_DEG;
-        if (g_servo_angle < g_servo_target) g_servo_angle = g_servo_target;
-    }
+    DOOR_PRINTF("hold %ums", UNLOCK_HOLD_MS);
+    osDelay(MS_TO_TICKS(UNLOCK_HOLD_MS));
 
-    uint32_t us = ServoAngleToPulseUs(g_servo_angle);
-    for (unsigned int i = 0; i < SERVO_MOVE_BURST_CYCLES; i++) {
-        ServoSendPulseUs(us);
-    }
+    DOOR_PRINTF("closing");
+    ServoSetAngle(DOOR_LOCK_ANGLE_DEG);
+
+    DOOR_PRINTF("done");
 }
 
-/* ======================== 按键消抖 ======================== */
+/* ======================== 按键 ======================== */
 
 static uint8_t DoorButtonRead(void)
 {
@@ -157,14 +133,14 @@ static void DoorLedSet(uint8_t on)
     IoTGpioSetOutputVal(DOOR_LED_GPIO, on ? IOT_GPIO_VALUE0 : IOT_GPIO_VALUE1);
 }
 
-static void DoorLedUpdate(uint32_t elapsed_ms)
+static void DoorLedUpdate(uint32_t ms, door_state_t st)
 {
-    g_led_toggle_ms += elapsed_ms;
-    uint8_t sle_ok = sle_uart_client_is_connected() ? 1 : 0;
+    g_led_toggle_ms += ms;
+    uint8_t sle = sle_uart_client_is_connected() ? 1 : 0;
 
-    switch (g_door_state) {
+    switch (st) {
     case DOOR_STATE_LOCKED:
-        if (sle_ok) DoorLedSet(0);
+        if (sle) DoorLedSet(0);
         else if (g_led_toggle_ms >= LED_SLOW_BLINK_MS) {
             g_led_toggle_ms = 0; DoorLedSet(g_led_on ? 0 : 1);
         }
@@ -176,7 +152,7 @@ static void DoorLedUpdate(uint32_t elapsed_ms)
         }
         break;
     case DOOR_STATE_UNLOCKED:
-        if (sle_ok) DoorLedSet(1);
+        if (sle) DoorLedSet(1);
         else if (g_led_toggle_ms >= LED_SLOW_BLINK_MS) {
             g_led_toggle_ms = 0; DoorLedSet(g_led_on ? 0 : 1);
         }
@@ -197,92 +173,30 @@ static void OnSleMessageReceived(uint8_t *data, uint16_t len)
         g_remote_cmd = cmd;
 }
 
-/* ======================== PIR 检测 ======================== */
+/* ======================== PIR ======================== */
 
-static void DoorPirSample(uint32_t elapsed_ms)
+static uint8_t DoorPirSample(uint32_t ms)
 {
-    g_pir_last_ms += elapsed_ms;
-    if (g_pir_last_ms < PIR_SAMPLE_INTERVAL_MS) return;
+    g_pir_last_ms += ms;
+    if (g_pir_last_ms < PIR_SAMPLE_INTERVAL_MS) return g_pir_motion;
     g_pir_last_ms = 0;
 
     uint16_t mv = 0;
-    if (adc_port_read(DOOR_PIR_ADC_CHANNEL, &mv) != ERRCODE_SUCC) return;
+    if (adc_port_read(DOOR_PIR_ADC_CHANNEL, &mv) != ERRCODE_SUCC) return g_pir_motion;
 
     if (mv >= ADC_HUMAN_MOTION_GE_MV) {
-        if (!g_pir_motion) DOOR_PRINTF("PIR: %umV >= %u → MOTION", mv, ADC_HUMAN_MOTION_GE_MV);
+        if (!g_pir_motion) DOOR_PRINTF("PIR: %umV → MOTION", mv);
         g_pir_idle_cnt = 0;
         g_pir_motion = 1;
     } else if (mv <= ADC_HUMAN_IDLE_LE_MV) {
         g_pir_idle_cnt++;
         if (g_pir_idle_cnt >= PIR_IDLE_CONFIRM_SAMPLES) {
-            if (g_pir_motion) DOOR_PRINTF("PIR: %umV <= %u → IDLE", mv, ADC_HUMAN_IDLE_LE_MV);
+            if (g_pir_motion) DOOR_PRINTF("PIR: %umV → IDLE", mv);
             g_pir_motion = 0;
             g_pir_idle_cnt = PIR_IDLE_CONFIRM_SAMPLES;
         }
     }
-}
-
-/* ======================== 门禁控制 ======================== */
-
-/*
- * 简单流程: PIR+按键 → 正向开90° → 等2s → 反向关90° → PIR重开
- * SLE: 手机远程开/关
- */
-static void DoorControl(uint32_t elapsed_ms, uint8_t btn)
-{
-    uint8_t cmd = g_remote_cmd;
-
-    switch (g_door_state) {
-
-    case DOOR_STATE_LOCKED:
-        if (cmd == DOOR_CMD_UNLOCK) {
-            DOOR_PRINTF("SLE UNLOCK");
-            ServoSetTarget(DOOR_UNLOCK_ANGLE_DEG);
-            g_door_state = DOOR_STATE_UNLOCKING;
-            g_remote_cmd = DOOR_REMOTE_CMD_NONE;
-            break;
-        }
-        if (g_pir_motion && btn) {
-            DOOR_PRINTF("PIR+BTN → opening");
-            ServoSetTarget(DOOR_UNLOCK_ANGLE_DEG);
-            g_door_state = DOOR_STATE_UNLOCKING;
-        } else if (g_pir_motion || btn) {
-            DOOR_PRINTF("wait: PIR=%d BTN=%d (need both)", g_pir_motion, btn);
-        }
-        break;
-
-    case DOOR_STATE_UNLOCKING:
-        if (g_servo_angle == DOOR_UNLOCK_ANGLE_DEG) {
-            DOOR_PRINTF("opened, wait %dms", UNLOCK_HOLD_MS);
-            g_hold_timer = UNLOCK_HOLD_MS;
-            g_door_state = DOOR_STATE_UNLOCKED;
-        }
-        break;
-
-    case DOOR_STATE_UNLOCKED:
-        if (cmd == DOOR_CMD_LOCK) {
-            DOOR_PRINTF("SLE LOCK");
-            ServoSetTarget(DOOR_LOCK_ANGLE_DEG);
-            g_door_state = DOOR_STATE_LOCKING;
-            g_remote_cmd = DOOR_REMOTE_CMD_NONE;
-            break;
-        }
-        if (g_hold_timer <= elapsed_ms) {
-            DOOR_PRINTF("hold done → closing");
-            ServoSetTarget(DOOR_LOCK_ANGLE_DEG);
-            g_door_state = DOOR_STATE_LOCKING;
-        } else {
-            g_hold_timer -= elapsed_ms;
-        }
-        break;
-
-    case DOOR_STATE_LOCKING:
-        if (g_servo_angle == DOOR_LOCK_ANGLE_DEG) {
-            DOOR_PRINTF("closed, PIR re-armed");
-            g_door_state = DOOR_STATE_LOCKED;
-        }
-        break;
-    }
+    return g_pir_motion;
 }
 
 /* ======================== 主任务 ======================== */
@@ -296,7 +210,7 @@ static void DoorAccessTask(void *arg)
     DOOR_PRINTF("  GPIO%d=servo GPIO%d=btn GPIO%d=LED ADC%d=PIR",
                 DOOR_SERVO_GPIO, DOOR_BUTTON_GPIO,
                 DOOR_LED_GPIO, DOOR_PIR_ADC_CHANNEL);
-    DOOR_PRINTF("  PIR+BTN → open 90° → wait %ds → close 0°",
+    DOOR_PRINTF("  PIR+BTN or SLE → open → hold %ds → close",
                 UNLOCK_HOLD_MS / 1000);
     DOOR_PRINTF("============================================");
 
@@ -322,35 +236,52 @@ static void DoorAccessTask(void *arg)
     else
         DOOR_PRINTF("SLE server OK");
 
-    g_door_state = DOOR_STATE_LOCKED;
+    /* 舵机归零 */
+    ServoSetAngle(0);
 
-    /* 启动时舵机定在 0° */
-    {
-        uint32_t us = ServoAngleToPulseUs(0);
-        for (unsigned int i = 0; i < SERVO_HOLD_CYCLES; i++)
-            ServoSendPulseUs(us);
-    }
+    DOOR_PRINTF("ready, waiting for trigger");
 
     /* 主循环 */
-    uint32_t elapsed = MAIN_LOOP_INTERVAL_MS;
-
     for (;;) {
-        uint8_t moving = (g_servo_angle != g_servo_target) ? 1 : 0;
-
-        DoorPirSample(elapsed);
+        uint8_t pir = DoorPirSample(MAIN_LOOP_INTERVAL_MS);
         uint8_t btn = (DoorButtonRead() == 0) ? 1 : 0;
-        DoorControl(elapsed, btn);
-        ServoMoveStep();
-        DoorLedUpdate(elapsed);
-        IoTWatchDogKick();
+        uint8_t cmd = g_remote_cmd;
 
-        if (!moving) {
-            osDelay(MS_TO_TICKS(MAIN_LOOP_INTERVAL_MS));
-            elapsed = SERVO_HOLD_CYCLES * (SERVO_PWM_PERIOD_US / 1000)
-                     + MAIN_LOOP_INTERVAL_MS;
-        } else {
-            elapsed = SERVO_MOVE_BURST_CYCLES * (SERVO_PWM_PERIOD_US / 1000);
+        /* SLE 开锁 */
+        if (cmd == DOOR_CMD_UNLOCK) {
+            DOOR_PRINTF("SLE trigger → open");
+            g_remote_cmd = DOOR_REMOTE_CMD_NONE;
+            DoorLedUpdate(0, DOOR_STATE_UNLOCKING);
+            DoorDoOpenClose();
+            DoorLedUpdate(0, DOOR_STATE_LOCKED);
+            continue;
         }
+
+        /* SLE 闭锁 */
+        if (cmd == DOOR_CMD_LOCK) {
+            DOOR_PRINTF("SLE LOCK → close");
+            g_remote_cmd = DOOR_REMOTE_CMD_NONE;
+            ServoSetAngle(DOOR_LOCK_ANGLE_DEG);
+            continue;
+        }
+
+        /* 本地: PIR有人 + 按键 → 开门 */
+        if (pir && btn) {
+            DOOR_PRINTF("PIR+BTN → open");
+            DoorLedUpdate(0, DOOR_STATE_UNLOCKING);
+            DoorDoOpenClose();
+            DoorLedUpdate(0, DOOR_STATE_LOCKED);
+            continue;
+        }
+
+        /* 调试 */
+        if (pir || btn) {
+            DOOR_PRINTF("wait: PIR=%d BTN=%d (need both)", pir, btn);
+        }
+
+        DoorLedUpdate(MAIN_LOOP_INTERVAL_MS, DOOR_STATE_LOCKED);
+        IoTWatchDogKick();
+        osDelay(MS_TO_TICKS(MAIN_LOOP_INTERVAL_MS));
     }
 }
 
