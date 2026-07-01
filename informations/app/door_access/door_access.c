@@ -66,7 +66,6 @@
 /* 舵机 */
 static unsigned int g_servo_angle    = 0;   /* 当前角度 */
 static unsigned int g_servo_target   = 0;   /* 目标角度 */
-static uint8_t      g_servo_hold_ctr = 0;   /* 到位保持计数器 */
 
 /* 门禁 */
 static door_state_t g_door_state   = DOOR_STATE_LOCKED;
@@ -123,35 +122,26 @@ static void ServoSetTarget(unsigned int angle)
 /*
  * ServoMoveStep — 每主循环调用一次，逐步逼近目标角度。
  *
- * 【关键设计】参考 pwm_servo.c 的成功做法：
- *   每个角度持续发送多个连续 PWM 脉冲，两个角度之间零间隔。
- *   pwm_servo 用 for 循环实现：ServoSetAngle(angle) 内部发 15 个脉冲(300ms)，
- *   循环结束后立刻进入下一个角度，无 osDelay。
+ * 【关键设计】参考 pwm_servo.c:
+ *   - 移动中：每个角度发多个连续脉冲，角度之间零间隔（不打 osDelay）
+ *   - 静止时：每轮都发少量保持脉冲（3 个=60ms），舵机始终有力矩
+ *     不会像之前那样攒 4 轮才发 15 个(300ms)阻塞 CPU
  *
- *   因此：舵机移动时，主循环不加 osDelay，脉冲本身提供时序；
- *   静止时加 osDelay 释放 CPU。
- *
- *   每步移动 SERVO_STEP_DEG°（默认 6°），每步发 SERVO_MOVE_BURST_CYCLES
- *   个脉冲（默认 10 ≈ 200ms）。开门 90°/6°=15 步 × 208ms ≈ 3 秒。
+ *   每步 SERVO_STEP_DEG°(6°)，每步 SERVO_MOVE_BURST_CYCLES 个脉冲。
+ *   开门 90°/6°=15 步 × ~205ms ≈ 3 秒。
  */
 static void ServoMoveStep(void)
 {
-    /* ---- 到位：周期性保持 ---- */
     if (g_servo_angle == g_servo_target) {
-        g_servo_hold_ctr++;
-        if (g_servo_hold_ctr >= SERVO_HOLD_REFRESH_LOOPS) {
-            g_servo_hold_ctr = 0;
-            uint32_t us = ServoAngleToPulseUs(g_servo_angle);
-            for (unsigned int i = 0; i < SERVO_HOLD_CYCLES; i++) {
-                ServoSendPulseUs(us);
-            }
+        /* 静止：每轮都发少量保持脉冲，舵机始终有力矩，不攒不阻塞 */
+        uint32_t us = ServoAngleToPulseUs(g_servo_angle);
+        for (unsigned int i = 0; i < SERVO_HOLD_CYCLES; i++) {
+            ServoSendPulseUs(us);
         }
         return;
     }
 
-    g_servo_hold_ctr = 0;
-
-    /* ---- 移动 SERVO_STEP_DEG° ---- */
+    /* ---- 移动 ---- */
     if (g_servo_angle < g_servo_target) {
         g_servo_angle += SERVO_STEP_DEG;
         if (g_servo_angle > g_servo_target) g_servo_angle = g_servo_target;
@@ -163,7 +153,6 @@ static void ServoMoveStep(void)
         if (g_servo_angle < g_servo_target) g_servo_angle = g_servo_target;
     }
 
-    /* 连续发脉冲 → 舵机获得连续 50Hz 参考，无间隙 */
     uint32_t us = ServoAngleToPulseUs(g_servo_angle);
     for (unsigned int i = 0; i < SERVO_MOVE_BURST_CYCLES; i++) {
         ServoSendPulseUs(us);
@@ -449,6 +438,16 @@ static void DoorAccessTask(void *arg)
     g_door_state = DOOR_STATE_LOCKED;
     DOOR_PRINTF("state: LOCKED, starting main loop");
 
+    /*
+     * 启动时立即发一组脉冲把舵机定在 0°，防止前几轮无 PWM 舵机漂移。
+     */
+    {
+        uint32_t us = ServoAngleToPulseUs(0);
+        for (unsigned int i = 0; i < SERVO_HOLD_CYCLES; i++) {
+            ServoSendPulseUs(us);
+        }
+    }
+
     /* 主循环 */
     uint32_t elapsed = MAIN_LOOP_INTERVAL_MS;
 
@@ -463,17 +462,17 @@ static void DoorAccessTask(void *arg)
         IoTWatchDogKick();
 
         /*
-         * 参考 pwm_servo.c: 运动中不打 osDelay，只靠脉冲忙等提供时序。
-         * 这样舵机看到的是零间隙的连续 50Hz 信号 → 不会抽搐。
-         * 静止时才打 50ms osDelay 释放 CPU 给其他任务。
+         * 静止时：每轮已发 3 个保持脉冲(60ms)，再 osDelay(50ms)=110ms/轮。
+         *          舵机始终有力矩，PIR 每轮都检测，不阻塞。
+         * 移动时：不打 osDelay，脉冲连续发送无间隙 → 不抽搐。
          */
         if (!moving) {
             osDelay(MS_TO_TICKS(MAIN_LOOP_INTERVAL_MS));
+            elapsed = SERVO_HOLD_CYCLES * (SERVO_PWM_PERIOD_US / 1000)
+                     + MAIN_LOOP_INTERVAL_MS;
+        } else {
+            elapsed = SERVO_MOVE_BURST_CYCLES * (SERVO_PWM_PERIOD_US / 1000);
         }
-        /* 运动中: 循环耗时 ≈ SERVO_MOVE_BURST_CYCLES × 20ms ≈ 200ms */
-        elapsed = moving
-            ? (SERVO_MOVE_BURST_CYCLES * (SERVO_PWM_PERIOD_US / 1000))
-            : MAIN_LOOP_INTERVAL_MS;
     }
 }
 

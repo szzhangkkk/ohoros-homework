@@ -55,14 +55,12 @@ extern "C" {
 #define SERVO_PULSE_MAX_US           2500    /* 180° 对应 2.5ms */
 #define SERVO_PULSE_RANGE_US         (SERVO_PULSE_MAX_US - SERVO_PULSE_MIN_US)
 
-/* 每个角度保持的 PWM 周期数（15 周期 ≈ 300ms） */
-#define SERVO_HOLD_CYCLES            15
-/* 舵机移动时每步脉冲数（10 周期 ≈ 200ms），参考 pwm_servo.c 的 15 周期 */
+/* 到位后每轮保持脉冲数（3 周期 ≈ 60ms），每轮都发，舵机始终有力矩 */
+#define SERVO_HOLD_CYCLES            3
+/* 舵机移动时每步脉冲数（10 周期 ≈ 200ms），参考 pwm_servo.c */
 #define SERVO_MOVE_BURST_CYCLES      10
-/* 舵机移动步进角度（每步 6°），减少步数加快响应 */
+/* 舵机移动步进角度（每步 6°） */
 #define SERVO_STEP_DEG               6
-/* 到位后持续发送保持 PWM 的周期间隔（每 N 个主循环发一次保持脉冲） */
-#define SERVO_HOLD_REFRESH_LOOPS     4       /* 每 4 次主循环（200ms）发一组保持 PWM */
 
 /* ======================== 门锁角度 ======================== */
 
