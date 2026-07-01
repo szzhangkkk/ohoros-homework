@@ -57,22 +57,20 @@ extern "C" {
 
 /* 到位后每轮保持脉冲数（10 周期 ≈ 200ms），每轮都发，舵机始终有力矩 */
 #define SERVO_HOLD_CYCLES            10
-/* 舵机移动时每步脉冲数（10 周期 ≈ 200ms），参考 pwm_servo.c */
-#define SERVO_MOVE_BURST_CYCLES      10
-/* 舵机移动步进角度（每步 6°） */
-#define SERVO_STEP_DEG               6
+/* 舵机移动时每步脉冲数（8 周期 ≈ 160ms），比之前更快 */
+#define SERVO_MOVE_BURST_CYCLES      8
+/* 舵机移动步进角度（每步 10°），9 步 ≈ 1.5s 开/关门 */
+#define SERVO_STEP_DEG               10
 
 /* ======================== 门锁角度 ======================== */
 
 #define DOOR_LOCK_ANGLE_DEG          0       /* 闭锁：舵机 0° */
-#define DOOR_UNLOCK_ANGLE_DEG        90      /* 开锁：舵机 90°（可按锁具结构调整） */
+#define DOOR_UNLOCK_ANGLE_DEG        90      /* 开锁：舵机 90° */
 
 /* ======================== PIR 防抖 ======================== */
 
-/* PIR 需连续 N 次采样为「无人」才算真正无人，防止短暂掉信号误判 */
-#define PIR_IDLE_CONFIRM_SAMPLES     5       /* 连续 5 次 ≈ 500ms 确认 */
-/* 注：本地采用 AND 逻辑（PIR+按键），关门动作不会单独触发 PIR 开锁，
-        因此不需要冷却期机制。*/
+/* PIR 需连续 N 次采样为「无人」才算真正无人 */
+#define PIR_IDLE_CONFIRM_SAMPLES     5
 
 /* ======================== 时间参数 ======================== */
 
@@ -86,15 +84,11 @@ extern "C" {
 /* PIR 采样间隔（毫秒） */
 #define PIR_SAMPLE_INTERVAL_MS       100
 
-/* 按键消抖：连续相同读数的次数（主循环 250ms/轮，2次≈500ms 消抖） */
+/* 按键消抖：连续相同读数的次数 */
 #define BUTTON_DEBOUNCE_SAMPLES      2
 
-/* 自动落锁超时（毫秒）：PIR 无人后 10s 闭锁 */
-#define AUTO_LOCK_TIMEOUT_MS         10000
-/* 最大开门时间（毫秒）：无论 PIR 判什么 30s 强制闭锁，兜底保护 */
-#define AUTO_LOCK_MAX_MS             30000
-/* 关门后冷却期（毫秒）：完成一次开关门后 5s 内不响应本地触发 */
-#define LOCK_COOLDOWN_MS             5000
+/* 开门后等待时间（毫秒）：开到位后等 2s 再自动关门 */
+#define UNLOCK_HOLD_MS               2000
 
 /* LED 闪烁间隔（毫秒） */
 #define LED_FAST_BLINK_MS            200

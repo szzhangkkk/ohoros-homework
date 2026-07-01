@@ -7,24 +7,12 @@
  * ======================== 功能概述 ========================
  *
  * 功能1：本地按键开门
- *   SR602 人体红外传感器（GPIO12 → ADC5）检测人体，
- *   GPIO8 按键按下 → 舵机开锁（GPIO10，90°）。
- *   两个条件同时满足才触发（AND 逻辑），防止误触发：
- *     PIR 检测到人 + 按键按下 → 开锁。
+ *   SR602 人体红外传感器（GPIO12 → ADC5）+ GPIO8 按键按下
+ *   → 舵机正向转90°开门 → 等2s → 反向转90°关门 → PIR重开待下次触发
+ *   PIR+按键同时满足才触发（AND 逻辑），防止误触发。
  *
  * 功能2：SLE 星闪无线管控
- *   门禁板作为 SLE SSAP Server 广播，手机作为 SLE Client
- *   扫描连接后，通过 SSAP Write 发送命令：
- *     0x00 = 闭锁  |  0x01 = 开锁
- *   门禁板收到后执行，并通过 Notify 回复状态。
- *
- *   SLE 远程命令优先级高于本地控制。
- *
- * ======================== 自动落锁 ========================
- *
- *   开锁后，PIR 确认无人后 10 秒自动闭锁。
- *   PIR 持续检测到人时，重置定时器保持开锁。
- *   多人流场景：人走后才倒数。
+ *   手机通过 SLE 远程发送 0x00=闭锁 / 0x01=开锁
  *
  * ======================== LED 指示 ========================
  *
@@ -33,13 +21,6 @@
  *   运动中              → 快闪（200ms）
  *   开锁 + SLE已连接   → 常亮
  *   开锁 + SLE未连接   → 慢闪
- *
- * ======================== 舵机修复说明 ========================
- *
- *   【原问题】每步只发 1 个 PWM 脉冲，两次脉冲间隔 50ms（其中 30ms 静默），
- *            舵机丢失参考信号 → 抽搐。
- *   【修复】  每步连续发送多个 50Hz 脉冲，舵机获得稳定参考信号。
- *            到位后周期性发送保持 PWM，舵机不丢力矩。
  */
 
 #include "door_access.h"
@@ -51,29 +32,22 @@
 #include "soc_osal.h"
 #include "errcode.h"
 
-/* 外设驱动 */
 #include "iot_gpio.h"
 #include "iot_watchdog.h"
 #include "adc.h"
 #include "adc_porting.h"
 
-/* SLE 协议栈 */
 #include "sle_uart_server.h"
 #include "sle_errcode.h"
 
 /* ======================== 全局状态 ======================== */
 
-/* 舵机 */
-static unsigned int g_servo_angle    = 0;   /* 当前角度 */
-static unsigned int g_servo_target   = 0;   /* 目标角度 */
+static unsigned int g_servo_angle  = 0;
+static unsigned int g_servo_target = 0;
 
-/* 门禁 */
-static door_state_t g_door_state     = DOOR_STATE_LOCKED;
-static uint32_t     g_lock_timer     = 0;   /* PIR无人后自动落锁倒计时（ms） */
-static uint32_t     g_max_timer      = 0;   /* 最大开门时间兜底（ms） */
-static uint32_t     g_cooldown_timer = 0;   /* 关门后冷却期倒计时（ms） */
+static door_state_t g_door_state = DOOR_STATE_LOCKED;
+static uint32_t     g_hold_timer = 0;   /* 开门后等待计时（ms） */
 
-/* SLE 远程命令 */
 static volatile uint8_t g_remote_cmd = DOOR_REMOTE_CMD_NONE;
 
 /* 按键消抖 */
@@ -84,22 +58,16 @@ static uint8_t g_btn_debounce_cnt = 0;
 /* PIR */
 static uint32_t g_pir_last_ms  = 0;
 static uint8_t  g_pir_motion   = 0;
-static uint8_t  g_pir_idle_cnt = 0;   /* 连续无人计数 */
+static uint8_t  g_pir_idle_cnt = 0;
 
 /* LED */
 static uint32_t g_led_toggle_ms = 0;
 static uint8_t  g_led_on        = 0;
 
-/* ======================== 日志 ======================== */
-
 #define DOOR_PRINTF(fmt, args...) printf(DOOR_LOG " " fmt "\r\n", ##args)
 
 /* ======================== 舵机控制 ======================== */
 
-/*
- * 输出一个完整的 50Hz PWM 周期（20ms）
- *   高电平 pulse_us → 低电平 (20ms - pulse_us)
- */
 static void ServoSendPulseUs(uint32_t pulse_us)
 {
     if (pulse_us > SERVO_PWM_PERIOD_US) pulse_us = SERVO_PWM_PERIOD_US;
@@ -122,19 +90,13 @@ static void ServoSetTarget(unsigned int angle)
 }
 
 /*
- * ServoMoveStep — 每主循环调用一次，逐步逼近目标角度。
- *
- * 【关键设计】参考 pwm_servo.c:
- *   - 移动中：每个角度发多个连续脉冲，角度之间零间隔（不打 osDelay）
- *   - 静止时：每轮都发保持脉冲（10 个=200ms），舵机始终有力矩
- *
- *   每步 SERVO_STEP_DEG°(6°)，每步 SERVO_MOVE_BURST_CYCLES 个脉冲。
- *   开门 90°/6°=15 步 × ~205ms ≈ 3 秒。
+ * ServoMoveStep — 每主循环调用一次。
+ *   移动中：每步发 SERVO_MOVE_BURST_CYCLES 个脉冲，不打 osDelay（零间隙）
+ *   静止时：每轮发 SERVO_HOLD_CYCLES 个保持脉冲
  */
 static void ServoMoveStep(void)
 {
     if (g_servo_angle == g_servo_target) {
-        /* 静止：每轮都发少量保持脉冲，舵机始终有力矩，不攒不阻塞 */
         uint32_t us = ServoAngleToPulseUs(g_servo_angle);
         for (unsigned int i = 0; i < SERVO_HOLD_CYCLES; i++) {
             ServoSendPulseUs(us);
@@ -142,7 +104,6 @@ static void ServoMoveStep(void)
         return;
     }
 
-    /* ---- 移动 ---- */
     if (g_servo_angle < g_servo_target) {
         g_servo_angle += SERVO_STEP_DEG;
         if (g_servo_angle > g_servo_target) g_servo_angle = g_servo_target;
@@ -203,28 +164,21 @@ static void DoorLedUpdate(uint32_t elapsed_ms)
 
     switch (g_door_state) {
     case DOOR_STATE_LOCKED:
-        if (sle_ok) {
-            DoorLedSet(0);
-        } else if (g_led_toggle_ms >= LED_SLOW_BLINK_MS) {
-            g_led_toggle_ms = 0;
-            DoorLedSet(g_led_on ? 0 : 1);
+        if (sle_ok) DoorLedSet(0);
+        else if (g_led_toggle_ms >= LED_SLOW_BLINK_MS) {
+            g_led_toggle_ms = 0; DoorLedSet(g_led_on ? 0 : 1);
         }
         break;
-
     case DOOR_STATE_UNLOCKING:
     case DOOR_STATE_LOCKING:
         if (g_led_toggle_ms >= LED_FAST_BLINK_MS) {
-            g_led_toggle_ms = 0;
-            DoorLedSet(g_led_on ? 0 : 1);
+            g_led_toggle_ms = 0; DoorLedSet(g_led_on ? 0 : 1);
         }
         break;
-
     case DOOR_STATE_UNLOCKED:
-        if (sle_ok) {
-            DoorLedSet(1);
-        } else if (g_led_toggle_ms >= LED_SLOW_BLINK_MS) {
-            g_led_toggle_ms = 0;
-            DoorLedSet(g_led_on ? 0 : 1);
+        if (sle_ok) DoorLedSet(1);
+        else if (g_led_toggle_ms >= LED_SLOW_BLINK_MS) {
+            g_led_toggle_ms = 0; DoorLedSet(g_led_on ? 0 : 1);
         }
         break;
     }
@@ -239,31 +193,12 @@ static void OnSleMessageReceived(uint8_t *data, uint16_t len)
     DOOR_PRINTF("SLE recv cmd=0x%02X (%s)", (unsigned)cmd,
                 cmd == DOOR_CMD_LOCK ? "LOCK" :
                 cmd == DOOR_CMD_UNLOCK ? "UNLOCK" : "?");
-    if (cmd == DOOR_CMD_LOCK || cmd == DOOR_CMD_UNLOCK) {
+    if (cmd == DOOR_CMD_LOCK || cmd == DOOR_CMD_UNLOCK)
         g_remote_cmd = cmd;
-    }
-}
-
-static void DoorSleNotifyState(void)
-{
-    if (!sle_uart_client_is_connected()) return;
-    uint8_t s = (g_door_state == DOOR_STATE_LOCKED) ? DOOR_CMD_LOCK : DOOR_CMD_UNLOCK;
-    errcode_t ret = sle_uart_server_send_report_by_handle(&s, 1);
-    if (ret != ERRCODE_SLE_SUCCESS)
-        DOOR_PRINTF("Notify fail: 0x%x", (unsigned)ret);
-    else
-        DOOR_PRINTF("Notify %s -> phone", s == DOOR_CMD_LOCK ? "LOCKED" : "UNLOCKED");
 }
 
 /* ======================== PIR 检测 ======================== */
 
-/*
- * DoorPirSample — 采样 SR602 PIR 传感器。
- *
- *   PIR 无人时需连续 N 次确认（防短暂掉信号误关）。
- *   PIR 有人时 1 次即响应（保证开门快）。
- *   中间值（750~2200mV）保持上一次判定，滞回防抖。
- */
 static void DoorPirSample(uint32_t elapsed_ms)
 {
     g_pir_last_ms += elapsed_ms;
@@ -275,32 +210,21 @@ static void DoorPirSample(uint32_t elapsed_ms)
 
     if (mv >= ADC_HUMAN_MOTION_GE_MV) {
         g_pir_idle_cnt = 0;
-        g_pir_motion = 1;   /* 有人：立即响应 */
+        g_pir_motion = 1;
     } else if (mv <= ADC_HUMAN_IDLE_LE_MV) {
         g_pir_idle_cnt++;
         if (g_pir_idle_cnt >= PIR_IDLE_CONFIRM_SAMPLES) {
             g_pir_motion = 0;
-            g_pir_idle_cnt = PIR_IDLE_CONFIRM_SAMPLES;  /* 钳位 */
+            g_pir_idle_cnt = PIR_IDLE_CONFIRM_SAMPLES;
         }
     }
-    /* 中间值保持上一次判定 */
 }
 
 /* ======================== 门禁控制 ======================== */
 
 /*
- * DoorControl — 每主循环调用一次。
- *
- * 本地触发（AND）: PIR有人 + 按键按下 → 开锁
- * SLE 远程:        手机直接下发开锁/闭锁命令
- * 自动落锁:        PIR确认无人后倒数 10s → 闭锁
- *
- * 状态转换:
- *   LOCKED   → UNLOCKING:  (PIR+按键) 或 SLE开锁
- *   UNLOCKING→ UNLOCKED:   舵机到达90°
- *   UNLOCKED → LOCKING:    自动落锁超时 或 SLE闭锁
- *   LOCKING  → LOCKED:     舵机到达0°
- *   LOCKING  → UNLOCKING:  (PIR+按键) 或 SLE开锁（中断关门）
+ * 简单流程: PIR+按键 → 正向开90° → 等2s → 反向关90° → PIR重开
+ * SLE: 手机远程开/关
  */
 static void DoorControl(uint32_t elapsed_ms, uint8_t btn)
 {
@@ -308,113 +232,49 @@ static void DoorControl(uint32_t elapsed_ms, uint8_t btn)
 
     switch (g_door_state) {
 
-    /* ----- 闭锁态 ----- */
     case DOOR_STATE_LOCKED:
-        /* 冷却期倒数 */
-        if (g_cooldown_timer > 0) {
-            g_cooldown_timer = (g_cooldown_timer <= elapsed_ms)
-                ? 0 : (g_cooldown_timer - elapsed_ms);
-        }
-        /* SLE 远程开锁：不受冷却期限制 */
         if (cmd == DOOR_CMD_UNLOCK) {
             DOOR_PRINTF("SLE UNLOCK");
             ServoSetTarget(DOOR_UNLOCK_ANGLE_DEG);
-            g_lock_timer = 0;
-            g_cooldown_timer = 0;
             g_door_state = DOOR_STATE_UNLOCKING;
             g_remote_cmd = DOOR_REMOTE_CMD_NONE;
             break;
         }
-        /* 本地: PIR+BTN，冷却期内不响应 */
-        if (g_cooldown_timer > 0) break;
         if (g_pir_motion && btn) {
-            DOOR_PRINTF("local trigger: PIR+BTN → UNLOCKING");
+            DOOR_PRINTF("PIR+BTN → opening");
             ServoSetTarget(DOOR_UNLOCK_ANGLE_DEG);
-            g_lock_timer = 0;
             g_door_state = DOOR_STATE_UNLOCKING;
         }
         break;
 
-    /* ----- 开锁中 ----- */
     case DOOR_STATE_UNLOCKING:
-        if (cmd == DOOR_CMD_LOCK) {
-            DOOR_PRINTF("SLE LOCK (abort)");
-            ServoSetTarget(DOOR_LOCK_ANGLE_DEG);
-            g_lock_timer = 0;
-            g_door_state = DOOR_STATE_LOCKING;
-            g_remote_cmd = DOOR_REMOTE_CMD_NONE;
-            break;
-        }
-        if (g_servo_angle == g_servo_target &&
-            g_servo_target == DOOR_UNLOCK_ANGLE_DEG) {
-            DOOR_PRINTF("arrived: UNLOCKED");
-            g_lock_timer = AUTO_LOCK_TIMEOUT_MS;
-            g_max_timer  = AUTO_LOCK_MAX_MS;
+        if (g_servo_angle == DOOR_UNLOCK_ANGLE_DEG) {
+            DOOR_PRINTF("opened, wait %dms", UNLOCK_HOLD_MS);
+            g_hold_timer = UNLOCK_HOLD_MS;
             g_door_state = DOOR_STATE_UNLOCKED;
         }
         break;
 
-    /* ----- 开锁态 ----- */
     case DOOR_STATE_UNLOCKED:
         if (cmd == DOOR_CMD_LOCK) {
             DOOR_PRINTF("SLE LOCK");
             ServoSetTarget(DOOR_LOCK_ANGLE_DEG);
-            g_lock_timer = 0;
-            g_max_timer  = 0;
             g_door_state = DOOR_STATE_LOCKING;
             g_remote_cmd = DOOR_REMOTE_CMD_NONE;
             break;
         }
-        /* PIR有人 → 重置 PIR 定时器 */
-        if (g_pir_motion) {
-            g_lock_timer = AUTO_LOCK_TIMEOUT_MS;
-        }
-        /* 自动落锁：PIR 无人 10s 到期 或 最大开门 30s 到期 */
-        if (g_lock_timer > 0) {
-            if (g_lock_timer <= elapsed_ms) {
-                g_lock_timer = 0;
-                g_max_timer  = 0;
-                DOOR_PRINTF("auto-lock (PIR idle) → LOCKING");
-                ServoSetTarget(DOOR_LOCK_ANGLE_DEG);
-                g_door_state = DOOR_STATE_LOCKING;
-                break;
-            }
-            g_lock_timer -= elapsed_ms;
-        }
-        if (g_max_timer > 0) {
-            if (g_max_timer <= elapsed_ms) {
-                g_max_timer  = 0;
-                g_lock_timer = 0;
-                DOOR_PRINTF("auto-lock (max time) → LOCKING");
-                ServoSetTarget(DOOR_LOCK_ANGLE_DEG);
-                g_door_state = DOOR_STATE_LOCKING;
-                break;
-            }
-            g_max_timer -= elapsed_ms;
+        if (g_hold_timer <= elapsed_ms) {
+            DOOR_PRINTF("hold done → closing");
+            ServoSetTarget(DOOR_LOCK_ANGLE_DEG);
+            g_door_state = DOOR_STATE_LOCKING;
+        } else {
+            g_hold_timer -= elapsed_ms;
         }
         break;
 
-    /* ----- 闭锁中 ----- */
     case DOOR_STATE_LOCKING:
-        if (cmd == DOOR_CMD_UNLOCK) {
-            DOOR_PRINTF("SLE UNLOCK (abort)");
-            ServoSetTarget(DOOR_UNLOCK_ANGLE_DEG);
-            g_lock_timer = 0;
-            g_door_state = DOOR_STATE_UNLOCKING;
-            g_remote_cmd = DOOR_REMOTE_CMD_NONE;
-            break;
-        }
-        /* 本地中断关门: PIR有人 AND 按键 */
-        if (g_pir_motion && btn) {
-            DOOR_PRINTF("PIR+BTN re-trigger → reopen");
-            ServoSetTarget(DOOR_UNLOCK_ANGLE_DEG);
-            g_door_state = DOOR_STATE_UNLOCKING;
-            break;
-        }
-        if (g_servo_angle == g_servo_target &&
-            g_servo_target == DOOR_LOCK_ANGLE_DEG) {
-            DOOR_PRINTF("arrived: LOCKED (cooldown %ds)", LOCK_COOLDOWN_MS / 1000);
-            g_cooldown_timer = LOCK_COOLDOWN_MS;
+        if (g_servo_angle == DOOR_LOCK_ANGLE_DEG) {
+            DOOR_PRINTF("closed, PIR re-armed");
             g_door_state = DOOR_STATE_LOCKED;
         }
         break;
@@ -432,8 +292,8 @@ static void DoorAccessTask(void *arg)
     DOOR_PRINTF("  GPIO%d=servo GPIO%d=btn GPIO%d=LED ADC%d=PIR",
                 DOOR_SERVO_GPIO, DOOR_BUTTON_GPIO,
                 DOOR_LED_GPIO, DOOR_PIR_ADC_CHANNEL);
-    DOOR_PRINTF("  local: PIR+BTN(AND) → open, auto-lock: %ds, cooldown: %ds",
-                AUTO_LOCK_TIMEOUT_MS / 1000, LOCK_COOLDOWN_MS / 1000);
+    DOOR_PRINTF("  PIR+BTN → open 90° → wait %ds → close 0°",
+                UNLOCK_HOLD_MS / 1000);
     DOOR_PRINTF("============================================");
 
     /* 硬件初始化 */
@@ -453,23 +313,18 @@ static void DoorAccessTask(void *arg)
     sle_uart_server_register_msg(OnSleMessageReceived);
 
     errcode_t ret = sle_uart_server_init();
-    if (ret != ERRCODE_SLE_SUCCESS) {
+    if (ret != ERRCODE_SLE_SUCCESS)
         DOOR_PRINTF("SLE init FAILED (0x%x) — local-only", (unsigned)ret);
-    } else {
+    else
         DOOR_PRINTF("SLE server OK");
-    }
 
     g_door_state = DOOR_STATE_LOCKED;
-    DOOR_PRINTF("state: LOCKED, starting main loop");
 
-    /*
-     * 启动时立即发一组脉冲把舵机定在 0°，防止前几轮无 PWM 舵机漂移。
-     */
+    /* 启动时舵机定在 0° */
     {
         uint32_t us = ServoAngleToPulseUs(0);
-        for (unsigned int i = 0; i < SERVO_HOLD_CYCLES; i++) {
+        for (unsigned int i = 0; i < SERVO_HOLD_CYCLES; i++)
             ServoSendPulseUs(us);
-        }
     }
 
     /* 主循环 */
@@ -485,11 +340,6 @@ static void DoorAccessTask(void *arg)
         DoorLedUpdate(elapsed);
         IoTWatchDogKick();
 
-        /*
-         * 静止时：每轮已发 10 个保持脉冲(200ms)，再 osDelay(50ms)=250ms/轮。
-         *          舵机始终有力矩，PIR 每轮都检测。
-         * 移动时：不打 osDelay，脉冲连续发送无间隙 → 不抽搐。
-         */
         if (!moving) {
             osDelay(MS_TO_TICKS(MAIN_LOOP_INTERVAL_MS));
             elapsed = SERVO_HOLD_CYCLES * (SERVO_PWM_PERIOD_US / 1000)
