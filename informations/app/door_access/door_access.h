@@ -93,8 +93,8 @@ extern "C" {
 #define AUTO_LOCK_TIMEOUT_MS         10000
 /* 最大开门时间（毫秒）：无论 PIR 判什么 30s 强制闭锁，兜底保护 */
 #define AUTO_LOCK_MAX_MS             30000
-/* 关门后冷却期（毫秒）：完成一次开关门后 10s 内不响应本地触发 */
-#define LOCK_COOLDOWN_MS             10000
+/* 关门后冷却期（毫秒）：完成一次开关门后 5s 内不响应本地触发 */
+#define LOCK_COOLDOWN_MS             5000
 
 /* LED 闪烁间隔（毫秒） */
 #define LED_FAST_BLINK_MS            200
