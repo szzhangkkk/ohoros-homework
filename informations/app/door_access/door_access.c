@@ -36,6 +36,7 @@ static uint8_t g_btn_debounce_cnt = 0;
 static uint32_t g_pir_last_ms  = 0;
 static uint8_t  g_pir_motion   = 0;
 static uint8_t  g_pir_idle_cnt = 0;
+static uint32_t g_pir_print_ms = 0;   /* 每秒打印一次 mV */
 
 static uint32_t g_led_toggle_ms = 0;
 static uint8_t  g_led_on        = 0;
@@ -183,6 +184,13 @@ static uint8_t DoorPirSample(uint32_t ms)
 
     uint16_t mv = 0;
     if (adc_port_read(DOOR_PIR_ADC_CHANNEL, &mv) != ERRCODE_SUCC) return g_pir_motion;
+
+    /* 每秒打印一次当前电压 */
+    g_pir_print_ms += ms;
+    if (g_pir_print_ms >= 1000) {
+        g_pir_print_ms = 0;
+        DOOR_PRINTF("PIR: %umV [thr: %u-%u]", mv, ADC_HUMAN_IDLE_LE_MV, ADC_HUMAN_MOTION_GE_MV);
+    }
 
     if (mv >= ADC_HUMAN_MOTION_GE_MV) {
         if (!g_pir_motion) DOOR_PRINTF("PIR: %umV → MOTION", mv);
