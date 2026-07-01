@@ -55,8 +55,8 @@ extern "C" {
 #define SERVO_PULSE_MAX_US           2500    /* 180° 对应 2.5ms */
 #define SERVO_PULSE_RANGE_US         (SERVO_PULSE_MAX_US - SERVO_PULSE_MIN_US)
 
-/* 到位后每轮保持脉冲数（3 周期 ≈ 60ms），每轮都发，舵机始终有力矩 */
-#define SERVO_HOLD_CYCLES            3
+/* 到位后每轮保持脉冲数（10 周期 ≈ 200ms），每轮都发，舵机始终有力矩 */
+#define SERVO_HOLD_CYCLES            10
 /* 舵机移动时每步脉冲数（10 周期 ≈ 200ms），参考 pwm_servo.c */
 #define SERVO_MOVE_BURST_CYCLES      10
 /* 舵机移动步进角度（每步 6°） */
@@ -120,7 +120,7 @@ extern "C" {
  * 如需调整灵敏度：拉高 MOTION_GE 值 = 要更近才能触发。
  */
 #define ADC_MV_FULL_SCALE            3600U
-#define ADC_HUMAN_MOTION_GE_MV       2800U   /* >= 此值判定为有人（强阈值，仅近距离） */
+#define ADC_HUMAN_MOTION_GE_MV       2200U   /* >= 此值判定为有人（需靠近 ~1m 内） */
 #define ADC_HUMAN_IDLE_LE_MV         750U    /* <= 此值判定为空闲 */
 
 #if ADC_HUMAN_IDLE_LE_MV >= ADC_HUMAN_MOTION_GE_MV
