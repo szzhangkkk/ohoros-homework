@@ -247,7 +247,6 @@ static void DoorAccessTask(void *arg)
     /* 主循环 */
     for (;;) {
         uint8_t pir = DoorPirSample(MAIN_LOOP_INTERVAL_MS);
-        uint8_t btn = (DoorButtonRead() == 0) ? 1 : 0;
         uint8_t cmd = g_remote_cmd;
 
         /* SLE 开锁 */
@@ -268,18 +267,13 @@ static void DoorAccessTask(void *arg)
             continue;
         }
 
-        /* 本地: PIR有人 + 按键 → 开门 */
-        if (pir && btn) {
-            DOOR_PRINTF("PIR+BTN → open");
+        /* PIR 检测到人 → 开门 */
+        if (pir) {
+            DOOR_PRINTF("PIR trigger → open");
             DoorLedUpdate(0, DOOR_STATE_UNLOCKING);
             DoorDoOpenClose();
             DoorLedUpdate(0, DOOR_STATE_LOCKED);
             continue;
-        }
-
-        /* 调试 */
-        if (pir || btn) {
-            DOOR_PRINTF("wait: PIR=%d BTN=%d (need both)", pir, btn);
         }
 
         DoorLedUpdate(MAIN_LOOP_INTERVAL_MS, DOOR_STATE_LOCKED);
