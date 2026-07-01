@@ -125,8 +125,7 @@ static void ServoSetTarget(unsigned int angle)
  *
  * 【关键设计】参考 pwm_servo.c:
  *   - 移动中：每个角度发多个连续脉冲，角度之间零间隔（不打 osDelay）
- *   - 静止时：每轮都发少量保持脉冲（3 个=60ms），舵机始终有力矩
- *     不会像之前那样攒 4 轮才发 15 个(300ms)阻塞 CPU
+ *   - 静止时：每轮都发保持脉冲（10 个=200ms），舵机始终有力矩
  *
  *   每步 SERVO_STEP_DEG°(6°)，每步 SERVO_MOVE_BURST_CYCLES 个脉冲。
  *   开门 90°/6°=15 步 × ~205ms ≈ 3 秒。
@@ -260,9 +259,9 @@ static void DoorSleNotifyState(void)
 /*
  * DoorPirSample — 采样 SR602 PIR 传感器。
  *
- * 【修复点 3】PIR 无人时需连续 N 次确认（防短暂掉信号误关）。
- *            PIR 有人时 1 次即响应（保证开门快）。
- *            中间值（750~1850mV）保持上一次判定，滞回防抖。
+ *   PIR 无人时需连续 N 次确认（防短暂掉信号误关）。
+ *   PIR 有人时 1 次即响应（保证开门快）。
+ *   中间值（750~2200mV）保持上一次判定，滞回防抖。
  */
 static void DoorPirSample(uint32_t elapsed_ms)
 {
@@ -472,8 +471,8 @@ static void DoorAccessTask(void *arg)
         IoTWatchDogKick();
 
         /*
-         * 静止时：每轮已发 3 个保持脉冲(60ms)，再 osDelay(50ms)=110ms/轮。
-         *          舵机始终有力矩，PIR 每轮都检测，不阻塞。
+         * 静止时：每轮已发 10 个保持脉冲(200ms)，再 osDelay(50ms)=250ms/轮。
+         *          舵机始终有力矩，PIR 每轮都检测。
          * 移动时：不打 osDelay，脉冲连续发送无间隙 → 不抽搐。
          */
         if (!moving) {
