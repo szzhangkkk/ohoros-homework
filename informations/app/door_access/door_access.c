@@ -69,7 +69,8 @@ static unsigned int g_servo_target   = 0;   /* 目标角度 */
 
 /* 门禁 */
 static door_state_t g_door_state     = DOOR_STATE_LOCKED;
-static uint32_t     g_lock_timer     = 0;   /* 自动落锁倒计时（ms） */
+static uint32_t     g_lock_timer     = 0;   /* PIR无人后自动落锁倒计时（ms） */
+static uint32_t     g_max_timer      = 0;   /* 最大开门时间兜底（ms） */
 static uint32_t     g_cooldown_timer = 0;   /* 关门后冷却期倒计时（ms） */
 
 /* SLE 远程命令 */
@@ -348,6 +349,7 @@ static void DoorControl(uint32_t elapsed_ms, uint8_t btn)
             g_servo_target == DOOR_UNLOCK_ANGLE_DEG) {
             DOOR_PRINTF("arrived: UNLOCKED");
             g_lock_timer = AUTO_LOCK_TIMEOUT_MS;
+            g_max_timer  = AUTO_LOCK_MAX_MS;
             g_door_state = DOOR_STATE_UNLOCKED;
         }
         break;
@@ -358,24 +360,37 @@ static void DoorControl(uint32_t elapsed_ms, uint8_t btn)
             DOOR_PRINTF("SLE LOCK");
             ServoSetTarget(DOOR_LOCK_ANGLE_DEG);
             g_lock_timer = 0;
+            g_max_timer  = 0;
             g_door_state = DOOR_STATE_LOCKING;
             g_remote_cmd = DOOR_REMOTE_CMD_NONE;
             break;
         }
-        /* PIR有人 → 重置定时器保持开锁 */
+        /* PIR有人 → 重置 PIR 定时器 */
         if (g_pir_motion) {
             g_lock_timer = AUTO_LOCK_TIMEOUT_MS;
         }
-        /* 自动落锁 */
+        /* 自动落锁：PIR 无人 10s 到期 或 最大开门 30s 到期 */
         if (g_lock_timer > 0) {
             if (g_lock_timer <= elapsed_ms) {
                 g_lock_timer = 0;
-                DOOR_PRINTF("auto-lock → LOCKING");
+                g_max_timer  = 0;
+                DOOR_PRINTF("auto-lock (PIR idle) → LOCKING");
                 ServoSetTarget(DOOR_LOCK_ANGLE_DEG);
                 g_door_state = DOOR_STATE_LOCKING;
-            } else {
-                g_lock_timer -= elapsed_ms;
+                break;
             }
+            g_lock_timer -= elapsed_ms;
+        }
+        if (g_max_timer > 0) {
+            if (g_max_timer <= elapsed_ms) {
+                g_max_timer  = 0;
+                g_lock_timer = 0;
+                DOOR_PRINTF("auto-lock (max time) → LOCKING");
+                ServoSetTarget(DOOR_LOCK_ANGLE_DEG);
+                g_door_state = DOOR_STATE_LOCKING;
+                break;
+            }
+            g_max_timer -= elapsed_ms;
         }
         break;
 

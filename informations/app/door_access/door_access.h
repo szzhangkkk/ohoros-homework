@@ -89,8 +89,10 @@ extern "C" {
 /* 按键消抖：连续相同读数的次数（主循环 250ms/轮，2次≈500ms 消抖） */
 #define BUTTON_DEBOUNCE_SAMPLES      2
 
-/* 自动落锁超时（毫秒） */
+/* 自动落锁超时（毫秒）：PIR 无人后 10s 闭锁 */
 #define AUTO_LOCK_TIMEOUT_MS         10000
+/* 最大开门时间（毫秒）：无论 PIR 判什么 30s 强制闭锁，兜底保护 */
+#define AUTO_LOCK_MAX_MS             30000
 /* 关门后冷却期（毫秒）：完成一次开关门后 10s 内不响应本地触发 */
 #define LOCK_COOLDOWN_MS             10000
 
