@@ -91,6 +91,8 @@ extern "C" {
 
 /* 自动落锁超时（毫秒） */
 #define AUTO_LOCK_TIMEOUT_MS         10000
+/* 关门后冷却期（毫秒）：完成一次开关门后 10s 内不响应本地触发 */
+#define LOCK_COOLDOWN_MS             10000
 
 /* LED 闪烁间隔（毫秒） */
 #define LED_FAST_BLINK_MS            200

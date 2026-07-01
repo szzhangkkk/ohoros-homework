@@ -68,8 +68,9 @@ static unsigned int g_servo_angle    = 0;   /* 当前角度 */
 static unsigned int g_servo_target   = 0;   /* 目标角度 */
 
 /* 门禁 */
-static door_state_t g_door_state   = DOOR_STATE_LOCKED;
-static uint32_t     g_lock_timer   = 0;   /* 自动落锁倒计时（ms），0=不倒数 */
+static door_state_t g_door_state     = DOOR_STATE_LOCKED;
+static uint32_t     g_lock_timer     = 0;   /* 自动落锁倒计时（ms） */
+static uint32_t     g_cooldown_timer = 0;   /* 关门后冷却期倒计时（ms） */
 
 /* SLE 远程命令 */
 static volatile uint8_t g_remote_cmd = DOOR_REMOTE_CMD_NONE;
@@ -309,15 +310,23 @@ static void DoorControl(uint32_t elapsed_ms, uint8_t btn)
 
     /* ----- 闭锁态 ----- */
     case DOOR_STATE_LOCKED:
+        /* 冷却期倒数 */
+        if (g_cooldown_timer > 0) {
+            g_cooldown_timer = (g_cooldown_timer <= elapsed_ms)
+                ? 0 : (g_cooldown_timer - elapsed_ms);
+        }
+        /* SLE 远程开锁：不受冷却期限制 */
         if (cmd == DOOR_CMD_UNLOCK) {
             DOOR_PRINTF("SLE UNLOCK");
             ServoSetTarget(DOOR_UNLOCK_ANGLE_DEG);
             g_lock_timer = 0;
+            g_cooldown_timer = 0;
             g_door_state = DOOR_STATE_UNLOCKING;
             g_remote_cmd = DOOR_REMOTE_CMD_NONE;
             break;
         }
-        /* 本地: PIR有人 AND 按键按下 → 开锁 */
+        /* 本地: PIR+BTN，冷却期内不响应 */
+        if (g_cooldown_timer > 0) break;
         if (g_pir_motion && btn) {
             DOOR_PRINTF("local trigger: PIR+BTN → UNLOCKING");
             ServoSetTarget(DOOR_UNLOCK_ANGLE_DEG);
@@ -390,7 +399,8 @@ static void DoorControl(uint32_t elapsed_ms, uint8_t btn)
         }
         if (g_servo_angle == g_servo_target &&
             g_servo_target == DOOR_LOCK_ANGLE_DEG) {
-            DOOR_PRINTF("arrived: LOCKED");
+            DOOR_PRINTF("arrived: LOCKED (cooldown %ds)", LOCK_COOLDOWN_MS / 1000);
+            g_cooldown_timer = LOCK_COOLDOWN_MS;
             g_door_state = DOOR_STATE_LOCKED;
         }
         break;
@@ -408,8 +418,8 @@ static void DoorAccessTask(void *arg)
     DOOR_PRINTF("  GPIO%d=servo GPIO%d=btn GPIO%d=LED ADC%d=PIR",
                 DOOR_SERVO_GPIO, DOOR_BUTTON_GPIO,
                 DOOR_LED_GPIO, DOOR_PIR_ADC_CHANNEL);
-    DOOR_PRINTF("  local: PIR+BTN(AND) → open, auto-lock: %ds",
-                AUTO_LOCK_TIMEOUT_MS / 1000);
+    DOOR_PRINTF("  local: PIR+BTN(AND) → open, auto-lock: %ds, cooldown: %ds",
+                AUTO_LOCK_TIMEOUT_MS / 1000, LOCK_COOLDOWN_MS / 1000);
     DOOR_PRINTF("============================================");
 
     /* 硬件初始化 */
