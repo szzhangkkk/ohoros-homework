@@ -184,8 +184,11 @@ static uint8_t DoorPirSample(uint32_t ms)
     uint16_t mv = 0;
     if (adc_port_read(DOOR_PIR_ADC_CHANNEL, &mv) != ERRCODE_SUCC) return g_pir_motion;
 
+    /* 每次都打印 mV 值，用于调试 */
+    DOOR_PRINTF("PIR: %umV", mv);
+
     if (mv >= ADC_HUMAN_MOTION_GE_MV) {
-        if (!g_pir_motion) DOOR_PRINTF("PIR: %umV → MOTION", mv);
+        DOOR_PRINTF("PIR → MOTION");
         g_pir_idle_cnt = 0;
         g_pir_motion = 1;
     } else if (mv <= ADC_HUMAN_IDLE_LE_MV) {
