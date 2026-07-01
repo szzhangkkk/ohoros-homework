@@ -62,8 +62,9 @@ extern "C" {
 
 #define PIR_IDLE_CONFIRM_SAMPLES     5
 #define ADC_MV_FULL_SCALE            3600U
-#define ADC_HUMAN_MOTION_GE_MV       1000U   /* >= 此值判定为有人（基线~550mV） */
-#define ADC_HUMAN_IDLE_LE_MV         700U    /* <= 此值判定为空闲 */
+#define ADC_HUMAN_MOTION_GE_MV       600U    /* >= 此值判定为有人（基线~550mV，峰值~758mV） */
+#define ADC_HUMAN_IDLE_LE_MV         550U    /* <= 此值判定为空闲 */
+#define ADC_MIN_VALID_MV             100U    /* < 此值视为 ADC 采样异常，丢弃 */
 
 #if ADC_HUMAN_IDLE_LE_MV >= ADC_HUMAN_MOTION_GE_MV
 #error "ADC_HUMAN_IDLE_LE_MV must be less than ADC_HUMAN_MOTION_GE_MV"

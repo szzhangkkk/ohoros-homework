@@ -185,6 +185,9 @@ static uint8_t DoorPirSample(uint32_t ms)
     uint16_t mv = 0;
     if (adc_port_read(DOOR_PIR_ADC_CHANNEL, &mv) != ERRCODE_SUCC) return g_pir_motion;
 
+    /* 过滤 ADC 采样异常（周期性 4mV 毛刺等） */
+    if (mv < ADC_MIN_VALID_MV) return g_pir_motion;
+
     /* 每秒打印一次当前电压 */
     g_pir_print_ms += ms;
     if (g_pir_print_ms >= 1000) {
